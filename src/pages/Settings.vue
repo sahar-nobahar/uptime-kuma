@@ -115,6 +115,9 @@ export default {
                 "api-keys": {
                     title: this.$t("API Keys"),
                 },
+                "weekly-report": {
+                    title: this.$t("Weekly AI Report"),
+                },
                 proxies: {
                     title: this.$t("Proxies"),
                 },
