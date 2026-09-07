@@ -383,6 +383,8 @@
                 </div>
             </div>
 
+            <NotificationHistory :monitor-id="monitor.id" />
+
             <Confirm ref="confirmPause" :yes-text="$t('Yes')" :no-text="$t('No')" @yes="pauseMonitor">
                 {{ $t("pauseMonitorMsg") }}
             </Confirm>
@@ -462,6 +464,7 @@ import "prismjs/components/prism-css";
 import { PrismEditor } from "vue-prism-editor";
 import "vue-prism-editor/dist/prismeditor.min.css";
 import ScreenshotDialog from "../components/ScreenshotDialog.vue";
+import NotificationHistory from "../components/NotificationHistory.vue";
 
 export default {
     components: {
@@ -477,6 +480,7 @@ export default {
         CertificateInfo,
         PrismEditor,
         ScreenshotDialog,
+        NotificationHistory,
     },
     data() {
         return {
