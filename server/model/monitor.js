@@ -62,6 +62,7 @@ const zlib = require("node:zlib");
 const { promisify } = require("node:util");
 const brotliCompress = promisify(zlib.brotliCompress);
 const DomainExpiry = require("./domain_expiry");
+const NotificationHistory = require("./notification_history");
 
 const rootCertificates = rootCertificatesFingerprints();
 
@@ -1503,16 +1504,39 @@ class Monitor extends BeanModel {
             }
 
             for (let notification of notificationList) {
+                let notificationConfig = null;
+                try {
+                    notificationConfig = JSON.parse(notification.config);
+                } catch {
+                    notificationConfig = null;
+                }
                 try {
                     await Notification.send(
-                        JSON.parse(notification.config),
+                        notificationConfig ?? JSON.parse(notification.config),
                         msg,
                         monitor.toJSON(preloadData, false),
                         heartbeatJSON
                     );
+                    await NotificationHistory.record({
+                        monitorID: monitor.id ?? null,
+                        notificationID: notification.id ?? null,
+                        type: notificationConfig?.type ?? null,
+                        notificationName: notification.name ?? null,
+                        message: msg,
+                        success: true,
+                    });
                 } catch (e) {
                     log.error("monitor", "Cannot send notification to " + notification.name);
                     log.error("monitor", e);
+                    await NotificationHistory.record({
+                        monitorID: monitor.id ?? null,
+                        notificationID: notification.id ?? null,
+                        type: notificationConfig?.type ?? null,
+                        notificationName: notification.name ?? null,
+                        message: msg,
+                        success: false,
+                        error: e?.message ?? String(e),
+                    });
                 }
             }
         }
@@ -1557,16 +1581,40 @@ class Monitor extends BeanModel {
         log.debug("monitor", "Send certificate notification");
 
         for (let notification of notificationList) {
+            let notificationConfig = null;
+            try {
+                notificationConfig = JSON.parse(notification.config);
+            } catch {
+                notificationConfig = null;
+            }
+            const certMsg = `[${this.name}][${this.url}] ${certType} certificate ${certCN} will expire in ${daysRemaining} days`;
             try {
                 log.debug("monitor", "Sending to " + notification.name);
                 await Notification.send(
-                    JSON.parse(notification.config),
-                    `[${this.name}][${this.url}] ${certType} certificate ${certCN} will expire in ${daysRemaining} days`
+                    notificationConfig ?? JSON.parse(notification.config),
+                    certMsg
                 );
                 sent = true;
+                await NotificationHistory.record({
+                    monitorID: this.id ?? null,
+                    notificationID: notification.id ?? null,
+                    type: notificationConfig?.type ?? null,
+                    notificationName: notification.name ?? null,
+                    message: certMsg,
+                    success: true,
+                });
             } catch (e) {
                 log.error("monitor", "Cannot send cert notification to " + notification.name);
                 log.error("monitor", e);
+                await NotificationHistory.record({
+                    monitorID: this.id ?? null,
+                    notificationID: notification.id ?? null,
+                    type: notificationConfig?.type ?? null,
+                    notificationName: notification.name ?? null,
+                    message: certMsg,
+                    success: false,
+                    error: e?.message ?? String(e),
+                });
             }
         }
 

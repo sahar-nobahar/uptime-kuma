@@ -136,6 +136,7 @@ const {
 log.debug("server", "Importing Notification");
 const { Notification } = require("./notification");
 Notification.init();
+const NotificationHistory = require("./model/notification_history");
 log.debug("server", "Importing Web-Push");
 const webpush = require("web-push");
 
@@ -1626,6 +1627,107 @@ let needSetup = false;
                 callback(await Notification.checkApprise());
             } catch (e) {
                 callback(false);
+            }
+        });
+
+        socket.on("getNotificationHistory", async (options, callback) => {
+            try {
+                checkLogin(socket);
+
+                // Backward compatibility: allow (callback) with default paging
+                if (typeof options === "function") {
+                    callback = options;
+                    options = {};
+                }
+                const { monitorID = null, notificationID = null, limit = 25, offset = 0 } = options ?? {};
+
+                if (monitorID != null) {
+                    const monitor = await R.findOne("monitor", " id = ? AND user_id = ? ", [monitorID, socket.userID]);
+                    if (!monitor) {
+                        throw new Error("Monitor not found or access denied");
+                    }
+                }
+
+                if (notificationID != null) {
+                    const notification = await R.findOne("notification", " id = ? AND user_id = ? ", [
+                        notificationID,
+                        socket.userID,
+                    ]);
+                    if (!notification) {
+                        throw new Error("Notification not found or access denied");
+                    }
+                }
+
+                const { rows, total } = await NotificationHistory.getHistoryForUser({
+                    userID: socket.userID,
+                    monitorID,
+                    notificationID,
+                    limit,
+                    offset,
+                });
+
+                callback({
+                    ok: true,
+                    data: rows,
+                    total,
+                    limit,
+                    offset,
+                });
+            } catch (e) {
+                callback({
+                    ok: false,
+                    msg: e.message,
+                });
+            }
+        });
+
+        socket.on("clearNotificationHistory", async (options, callback) => {
+            try {
+                checkLogin(socket);
+
+                // Backward compatibility: allow (monitorID, callback) and (callback)
+                let monitorID = null;
+                let notificationID = null;
+                if (typeof options === "function") {
+                    callback = options;
+                } else if (typeof options === "number") {
+                    monitorID = options;
+                } else if (options) {
+                    monitorID = options.monitorID ?? null;
+                    notificationID = options.notificationID ?? null;
+                }
+
+                if (monitorID != null) {
+                    const monitor = await R.findOne("monitor", " id = ? AND user_id = ? ", [monitorID, socket.userID]);
+                    if (!monitor) {
+                        throw new Error("Monitor not found or access denied");
+                    }
+                }
+
+                if (notificationID != null) {
+                    const notification = await R.findOne("notification", " id = ? AND user_id = ? ", [
+                        notificationID,
+                        socket.userID,
+                    ]);
+                    if (!notification) {
+                        throw new Error("Notification not found or access denied");
+                    }
+                }
+
+                await NotificationHistory.clearHistoryForUser({
+                    userID: socket.userID,
+                    monitorID,
+                    notificationID,
+                });
+
+                callback({
+                    ok: true,
+                });
+            } catch (e) {
+                callback({
+                    ok: false,
+                    msg: e.message,
+                });
             }
         });
 
