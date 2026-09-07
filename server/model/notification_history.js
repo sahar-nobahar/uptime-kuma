@@ -118,6 +118,77 @@ class NotificationHistory extends BeanModel {
         }
         await R.exec(`DELETE FROM notification_history WHERE ${conditions.join(" AND ")}`, params);
     }
+
+    /**
+     * Get paginated history scoped to one user's monitors/notifications.
+     * When no explicit filter is given, only rows linked to the user's
+     * own monitors or notifications are returned (orphan rows are hidden).
+     * @param {object} opts Query options
+     * @param {number} opts.userID Owner user id
+     * @param {?number} opts.monitorID Filter by monitor id
+     * @param {?number} opts.notificationID Filter by notification id
+     * @param {number} opts.limit Page size (clamped 1..100)
+     * @param {number} opts.offset Page offset
+     * @returns {Promise<{rows: object[], total: number}>} Rows + total count
+     */
+    static async getHistoryForUser({ userID, monitorID = null, notificationID = null, limit = 25, offset = 0 } = {}) {
+        const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 25, 1), 100);
+        const safeOffset = Math.max(parseInt(offset, 10) || 0, 0);
+
+        let where = "";
+        let params = [];
+        if (monitorID != null && notificationID != null) {
+            where = "WHERE monitor_id = ? AND notification_id = ?";
+            params = [monitorID, notificationID];
+        } else if (monitorID != null) {
+            where = "WHERE monitor_id = ?";
+            params = [monitorID];
+        } else if (notificationID != null) {
+            where = "WHERE notification_id = ?";
+            params = [notificationID];
+        } else {
+            where = `WHERE monitor_id IN (SELECT id FROM monitor WHERE user_id = ?)
+                OR notification_id IN (SELECT id FROM notification WHERE user_id = ?)`;
+            params = [userID, userID];
+        }
+
+        const totalRow = await R.getRow(`SELECT COUNT(*) AS count FROM notification_history ${where}`, params);
+        const total = totalRow ? parseInt(totalRow.count, 10) : 0;
+
+        const rows = await R.getAll(
+            `SELECT * FROM notification_history ${where} ORDER BY id DESC LIMIT ? OFFSET ?`,
+            [...params, safeLimit, safeOffset]
+        );
+
+        return { rows, total };
+    }
+
+    /**
+     * Delete history rows scoped to one user's monitors/notifications.
+     * @param {object} opts Delete scope
+     * @param {number} opts.userID Owner user id
+     * @param {?number} opts.monitorID Filter by monitor id
+     * @param {?number} opts.notificationID Filter by notification id
+     * @returns {Promise<void>}
+     */
+    static async clearHistoryForUser({ userID, monitorID = null, notificationID = null } = {}) {
+        if (monitorID != null && notificationID != null) {
+            await R.exec("DELETE FROM notification_history WHERE monitor_id = ? AND notification_id = ?", [
+                monitorID,
+                notificationID,
+            ]);
+        } else if (monitorID != null) {
+            await R.exec("DELETE FROM notification_history WHERE monitor_id = ?", [monitorID]);
+        } else if (notificationID != null) {
+            await R.exec("DELETE FROM notification_history WHERE notification_id = ?", [notificationID]);
+        } else {
+            await R.exec(
+                `DELETE FROM notification_history WHERE monitor_id IN (SELECT id FROM monitor WHERE user_id = ?)
+                    OR notification_id IN (SELECT id FROM notification WHERE user_id = ?)`,
+                [userID, userID]
+            );
+        }
+    }
 }
 
 module.exports = NotificationHistory;
