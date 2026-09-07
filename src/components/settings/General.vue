@@ -211,6 +211,35 @@
                 </div>
             </div>
 
+            <!-- Weekly AI Report -->
+            <div class="mb-4">
+                <label class="form-label">{{ $t("Weekly AI Report") }}</label>
+                <div class="form-check">
+                    <input
+                        id="weeklyAiReportEnabled"
+                        v-model="settings.weeklyAiReportEnabled"
+                        class="form-check-input"
+                        type="checkbox"
+                    />
+                    <label class="form-check-label" for="weeklyAiReportEnabled">
+                        {{ $t("Enable weekly AI-generated report") }}
+                    </label>
+                </div>
+                <small class="text-muted">{{ $t("Requires AI API key setting below") }}</small>
+            </div>
+
+            <div class="mb-4">
+                <label class="form-label">{{ $t("AI API Key") }}</label>
+                <input
+                    id="weeklyAiApiKey"
+                    v-model="settings.weeklyAiApiKey"
+                    type="password"
+                    class="form-control"
+                    :placeholder="settings.weeklyAiApiKey ? '••••••••••••••••' : 'Enter API key'"
+                />
+                <small class="text-muted">{{ $t("Leave empty to disable AI analysis") }}</small>
+            </div>
+
             <!-- Save Button -->
             <div>
                 <button class="btn btn-primary" type="submit">
