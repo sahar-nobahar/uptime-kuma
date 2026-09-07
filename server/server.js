@@ -992,12 +992,37 @@ let needSetup = false;
             }
         });
 
-        socket.on("getMonitorList", async (callback) => {
+        socket.on("getMonitorList", async (filters, callback) => {
             try {
                 checkLogin(socket);
-                await server.sendMonitorList(socket);
+
+                // Backward compatibility: legacy clients call with (callback) only
+                if (typeof filters === "function") {
+                    callback = filters;
+                    filters = null;
+                }
+
+                // No filters: legacy behavior, push the full list to the client
+                if (filters == null) {
+                    await server.sendMonitorList(socket);
+                    callback({
+                        ok: true,
+                    });
+                    return;
+                }
+
+                // Server-side filtering for large lists: validate, match in SQL,
+                // and return only the matching monitors via the callback
+                // (no broadcast emit, so realtime updates keep working).
+                const filter = Monitor.parseMonitorListFilter(filters);
+                const { ids, total } = await Monitor.getFilteredMonitorIDs(socket.userID, filter);
+                const list = await server.getMonitorJSONList(socket.userID, null, ids);
                 callback({
                     ok: true,
+                    data: list,
+                    total,
+                    limit: filter.limit,
+                    offset: filter.offset,
                 });
             } catch (e) {
                 log.error("monitor", e);

@@ -149,6 +149,50 @@
             </li>
         </template>
     </MonitorListFilterDropdown>
+    <MonitorListFilterDropdown :filterActive="filterState.group != null">
+        <template #status>
+            <span
+                v-if="filterState.group != null"
+                class="selected-tag-wrapper"
+                :title="groupName(filterState.group)"
+            >
+                <font-awesome-icon icon="folder" class="me-1" />
+                {{ groupName(filterState.group) }}
+            </span>
+            <span v-else>
+                {{ $t("Group") }}
+            </span>
+        </template>
+        <template #dropdown>
+            <li class="list-unstyled m-0 p-0">
+                <div class="tags-dropdown-scroll">
+                    <ul class="list-unstyled m-0 p-0">
+                        <li v-for="groupMonitor in groupMonitors" :key="groupMonitor.id">
+                            <div class="dropdown-item" tabindex="0" @click.stop="toggleGroupFilter(groupMonitor.id)">
+                                <div class="d-flex align-items-center justify-content-between">
+                                    <span class="tag-name-wrapper" :title="groupMonitor.name">
+                                        <font-awesome-icon icon="folder" class="me-1" />
+                                        {{ groupMonitor.name }}
+                                    </span>
+                                    <span class="ps-3">
+                                        {{ getGroupMonitorCount(groupMonitor) }}
+                                        <span v-if="filterState.group === groupMonitor.id" class="px-1 filter-active">
+                                            <font-awesome-icon icon="check" />
+                                        </span>
+                                    </span>
+                                </div>
+                            </div>
+                        </li>
+                        <li v-if="groupMonitors.length === 0">
+                            <div class="dropdown-item disabled px-3">
+                                {{ $t("No groups found.") }}
+                            </div>
+                        </li>
+                    </ul>
+                </div>
+            </li>
+        </template>
+    </MonitorListFilterDropdown>
     <button
         v-if="hasGroups"
         type="button"
@@ -196,12 +240,22 @@ export default {
             let num = 0;
 
             Object.values(this.filterState).forEach((item) => {
-                if (item != null && item.length > 0) {
+                if (item != null && (typeof item === "number" || item.length > 0)) {
                     num += 1;
                 }
             });
 
             return num;
+        },
+        /**
+         * All group monitors that have children at any nesting level.
+         * @returns {Array} Group monitors with children.
+         */
+        groupMonitors() {
+            const monitors = Object.values(this.$root.monitorList);
+            return monitors.filter(
+                (monitor) => monitor.type === "group" && monitors.some((child) => child.parent === monitor.id)
+            );
         },
     },
     mounted() {
@@ -256,6 +310,26 @@ export default {
             }
             this.$emit("updateFilter", newFilter);
         },
+        /**
+         * Toggle the group filter. Only one group can be active at a time;
+         * clicking the active group again clears the filter.
+         * @param {number} groupID ID of the group monitor.
+         * @returns {void}
+         */
+        toggleGroupFilter(groupID) {
+            this.$emit("updateFilter", {
+                ...this.filterState,
+                group: this.filterState.group === groupID ? null : groupID,
+            });
+        },
+        /**
+         * Resolve a group monitor name for display.
+         * @param {number} groupID ID of the group monitor.
+         * @returns {string} Group name or empty string.
+         */
+        groupName(groupID) {
+            return this.$root.monitorList[groupID]?.name ?? "";
+        },
         clearFilters() {
             this.$emit("updateFilter", {
                 status: null,
@@ -271,6 +345,16 @@ export default {
         getTaggedMonitorCount(tag) {
             return Object.values(this.$root.monitorList).filter((monitor) => {
                 return monitor.tags.find((monitorTag) => monitorTag.tag_id === tag.id);
+            }).length;
+        },
+        /**
+         * Count direct and nested children of a group monitor.
+         * @param {object} groupMonitor Group monitor object.
+         * @returns {number} Number of monitors in the group.
+         */
+        getGroupMonitorCount(groupMonitor) {
+            return Object.values(this.$root.monitorList).filter((monitor) => {
+                return monitor.parent === groupMonitor.id;
             }).length;
         },
     },

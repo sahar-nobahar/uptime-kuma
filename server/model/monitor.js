@@ -1532,6 +1532,201 @@ class Monitor extends BeanModel {
     }
 
     /**
+     * Valid statuses for monitor list filtering (matches heartbeat statuses).
+     * @type {number[]}
+     */
+    static monitorListFilterStatuses = [DOWN, UP, PENDING, MAINTENANCE];
+
+    /**
+     * Validate and sanitize monitor list filter input.
+     * Unknown keys are ignored so older/newer clients stay compatible.
+     * @param {object} raw Raw filter object from the client
+     * @returns {object} Sanitized filter { status, active, tags, group, search, limit, offset }
+     * @throws {Error} If any provided value is invalid
+     */
+    static parseMonitorListFilter(raw) {
+        if (raw == null) {
+            return { status: null, active: null, tags: null, group: null, search: null, limit: 200, offset: 0 };
+        }
+        if (typeof raw !== "object" || Array.isArray(raw)) {
+            throw new Error("Invalid filter: filter must be an object");
+        }
+
+        const asArray = (value, name) => {
+            if (value == null) {
+                return null;
+            }
+            const list = Array.isArray(value) ? value : [value];
+            if (list.length === 0) {
+                return null;
+            }
+            return list;
+        };
+
+        let status = asArray(raw.status, "status");
+        if (status != null) {
+            status = status.map((item) => {
+                const num = typeof item === "string" && item !== "" ? Number(item) : item;
+                if (!Number.isInteger(num) || !Monitor.monitorListFilterStatuses.includes(num)) {
+                    throw new Error("Invalid filter: status must be one of 0, 1, 2, 3");
+                }
+                return num;
+            });
+            status = [...new Set(status)];
+        }
+
+        let active = asArray(raw.active, "active");
+        if (active != null) {
+            active = active.map((item) => {
+                if (item === true || item === 1 || item === "1") {
+                    return true;
+                }
+                if (item === false || item === 0 || item === "0") {
+                    return false;
+                }
+                throw new Error("Invalid filter: active must be boolean");
+            });
+            active = [...new Set(active)];
+        }
+
+        let tags = asArray(raw.tags, "tags");
+        if (tags != null) {
+            tags = tags.map((item) => {
+                const num = typeof item === "string" && item !== "" ? Number(item) : item;
+                if (!Number.isInteger(num) || num <= 0) {
+                    throw new Error("Invalid filter: tags must be positive tag IDs");
+                }
+                return num;
+            });
+            tags = [...new Set(tags)];
+        }
+
+        let group = raw.group ?? null;
+        if (group != null) {
+            if (typeof group === "string" && group !== "") {
+                group = Number(group);
+            }
+            if (!Number.isInteger(group) || group <= 0) {
+                throw new Error("Invalid filter: group must be a positive monitor ID");
+            }
+        }
+
+        let search = raw.search ?? null;
+        if (search != null) {
+            if (typeof search !== "string") {
+                throw new Error("Invalid filter: search must be a string");
+            }
+            search = search.trim().slice(0, 100);
+            if (search === "") {
+                search = null;
+            }
+        }
+
+        let limit = raw.limit ?? 200;
+        if (typeof limit === "string" && limit !== "") {
+            limit = Number(limit);
+        }
+        if (!Number.isInteger(limit) || limit <= 0) {
+            throw new Error("Invalid filter: limit must be a positive integer");
+        }
+        limit = Math.min(limit, 1000);
+
+        let offset = raw.offset ?? 0;
+        if (typeof offset === "string" && offset !== "") {
+            offset = Number(offset);
+        }
+        if (!Number.isInteger(offset) || offset < 0) {
+            throw new Error("Invalid filter: offset must be a non-negative integer");
+        }
+
+        return { status, active, tags, group, search, limit, offset };
+    }
+
+    /**
+     * Escape LIKE wildcards in a search term.
+     * @param {string} term Raw search term
+     * @returns {string} Escaped term
+     */
+    static escapeLikeTerm(term) {
+        return term.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+    }
+
+    /**
+     * Find monitor IDs of a user matching the given (already validated) filter.
+     * Runs a single indexed SQL query so large monitor lists do not have to
+     * be transferred and filtered on the client.
+     * @param {number} userID Owner user ID
+     * @param {object} filter Sanitized filter from parseMonitorListFilter
+     * @returns {Promise<{ids: number[], total: number}>} Matching IDs (paged) + total count
+     */
+    static async getFilteredMonitorIDs(userID, filter) {
+        if (filter.group != null) {
+            const groupMonitor = await R.findOne("monitor", " id = ? AND user_id = ? ", [filter.group, userID]);
+            if (!groupMonitor) {
+                throw new Error("Monitor not found or access denied");
+            }
+        }
+
+        const joins = [];
+        const conditions = ["monitor.user_id = ?"];
+        const params = [userID];
+
+        if (filter.status != null) {
+            joins.push(`JOIN (
+                SELECT monitor_id, MAX(id) AS max_id FROM heartbeat
+                WHERE monitor_id IN (SELECT id FROM monitor WHERE user_id = ?)
+                GROUP BY monitor_id
+            ) AS latest ON latest.monitor_id = monitor.id`);
+            params.push(userID);
+            joins.push("JOIN heartbeat AS hb ON hb.id = latest.max_id");
+            conditions.push(`hb.status IN (${filter.status.map(() => "?").join(",")})`);
+            params.push(...filter.status);
+        }
+
+        if (filter.active != null) {
+            // SQLite stores booleans as 0/1, MariaDB as 0/1 as well
+            conditions.push(`monitor.active IN (${filter.active.map(() => "?").join(",")})`);
+            params.push(...filter.active.map((item) => (item ? 1 : 0)));
+        }
+
+        if (filter.group != null) {
+            conditions.push("monitor.parent = ?");
+            params.push(filter.group);
+        }
+
+        if (filter.tags != null) {
+            conditions.push(`EXISTS (
+                SELECT 1 FROM monitor_tag
+                WHERE monitor_tag.monitor_id = monitor.id
+                AND monitor_tag.tag_id IN (${filter.tags.map(() => "?").join(",")})
+            )`);
+            params.push(...filter.tags);
+        }
+
+        if (filter.search != null) {
+            conditions.push("monitor.name LIKE ? ESCAPE '\\'");
+            params.push(`%${Monitor.escapeLikeTerm(filter.search)}%`);
+        }
+
+        const joinSQL = joins.length > 0 ? ` ${joins.join(" ")}` : "";
+        const whereSQL = `WHERE ${conditions.join(" AND ")}`;
+
+        const totalRow = await R.getRow(`SELECT COUNT(*) AS count FROM monitor${joinSQL} ${whereSQL}`, params);
+        const total = totalRow ? parseInt(totalRow.count, 10) : 0;
+
+        if (total === 0) {
+            return { ids: [], total: 0 };
+        }
+
+        const rows = await R.getAll(
+            `SELECT monitor.id AS id FROM monitor${joinSQL} ${whereSQL} ORDER BY monitor.weight DESC, monitor.name LIMIT ? OFFSET ?`,
+            [...params, filter.limit, filter.offset]
+        );
+
+        return { ids: rows.map((row) => row.id), total };
+    }
+
+    /**
      * Send a certificate notification when certificate expires in less
      * than target days
      * @param {string} certCN  Common Name attribute from the certificate subject

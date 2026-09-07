@@ -159,8 +159,15 @@ export default {
                 status: null,
                 active: null,
                 tags: null,
+                group: null,
             },
             collapseKey: 0,
+            /**
+             * Monitor IDs matched by the server-side filter.
+             * Null means no server filter is active (client-only filtering).
+             */
+            serverFilterIDs: null,
+            serverFilterTimeout: null,
         };
     },
     computed: {
@@ -196,6 +203,23 @@ export default {
                 }
                 return true;
             });
+
+            // Narrow down with the server-side match first (large lists),
+            // then apply the instant client-side filter on top.
+            if (this.serverFilterIDs != null) {
+                const allowedIDs = new Set(this.serverFilterIDs);
+                // Keep group rows whose children matched server-side,
+                // otherwise the matched children could never be displayed.
+                const matchedGroupIDs = new Set();
+                Object.values(this.$root.monitorList).forEach((monitor) => {
+                    if (monitor.parent != null && allowedIDs.has(monitor.id)) {
+                        matchedGroupIDs.add(monitor.parent);
+                    }
+                });
+                result = result.filter(
+                    (monitor) => allowedIDs.has(monitor.id) || matchedGroupIDs.has(monitor.id)
+                );
+            }
 
             result = result.filter(this.filterFunc);
 
@@ -236,6 +260,7 @@ export default {
                 this.filterState.status != null ||
                 this.filterState.active != null ||
                 this.filterState.tags != null ||
+                this.filterState.group != null ||
                 this.searchText !== ""
             );
         },
@@ -281,6 +306,13 @@ export default {
                     break;
                 }
             }
+            // Debounce server-side filtering while typing
+            if (this.serverFilterTimeout != null) {
+                clearTimeout(this.serverFilterTimeout);
+            }
+            this.serverFilterTimeout = setTimeout(() => {
+                this.applyServerFilter();
+            }, 300);
         },
         selectAll() {
             if (!this.disableSelectAllWatcher) {
@@ -307,9 +339,14 @@ export default {
     },
     mounted() {
         window.addEventListener("scroll", this.onScroll);
+        this.restoreFilterState();
+        this.applyServerFilter();
     },
     beforeUnmount() {
         window.removeEventListener("scroll", this.onScroll);
+        if (this.serverFilterTimeout != null) {
+            clearTimeout(this.serverFilterTimeout);
+        }
     },
     methods: {
         /**
@@ -345,6 +382,84 @@ export default {
          */
         updateFilter(newFilter) {
             this.filterState = newFilter;
+            this.persistFilterState();
+            this.applyServerFilter();
+        },
+        /**
+         * Persist the active filter state to localStorage (same pattern
+         * as the group collapse state in this component).
+         * @returns {void}
+         */
+        persistFilterState() {
+            try {
+                window.localStorage.setItem("monitorListFilter", JSON.stringify(this.filterState));
+            } catch {
+                // Storage unavailable (private mode, quota); filtering still works in-memory.
+            }
+        },
+        /**
+         * Restore the persisted filter state, if any.
+         * @returns {void}
+         */
+        restoreFilterState() {
+            try {
+                const storage = window.localStorage.getItem("monitorListFilter");
+                if (storage === null) {
+                    return;
+                }
+                const parsed = JSON.parse(storage);
+                if (parsed && typeof parsed === "object") {
+                    this.filterState = {
+                        status: Array.isArray(parsed.status) ? parsed.status : null,
+                        active: Array.isArray(parsed.active) ? parsed.active : null,
+                        tags: Array.isArray(parsed.tags) ? parsed.tags : null,
+                        group:
+                            typeof parsed.group === "number" && Number.isInteger(parsed.group) && parsed.group > 0
+                                ? parsed.group
+                                : null,
+                    };
+                }
+            } catch {
+                // Corrupt or unavailable storage: fall back to the default filter.
+            }
+        },
+        /**
+         * Ask the server for the monitors matching the current filter.
+         * The result narrows the rendered list before client-side filtering.
+         * On any error the server match is cleared and client-only
+         * filtering keeps working (graceful degradation).
+         * @returns {void}
+         */
+        applyServerFilter() {
+            const payload = {};
+            if (this.filterState.status != null && this.filterState.status.length > 0) {
+                payload.status = this.filterState.status;
+            }
+            if (this.filterState.active != null && this.filterState.active.length > 0) {
+                payload.active = this.filterState.active;
+            }
+            if (this.filterState.tags != null && this.filterState.tags.length > 0) {
+                payload.tags = this.filterState.tags;
+            }
+            if (this.filterState.group != null) {
+                payload.group = this.filterState.group;
+            }
+            if (this.searchText !== "") {
+                payload.search = this.searchText;
+            }
+
+            if (Object.keys(payload).length === 0) {
+                this.serverFilterIDs = null;
+                return;
+            }
+
+            this.$root.getSocket().emit("getMonitorList", payload, (res) => {
+                if (res && res.ok && res.data) {
+                    this.serverFilterIDs = Object.keys(res.data).map((id) => parseInt(id, 10));
+                } else {
+                    this.serverFilterIDs = null;
+                }
+            });
         },
         /**
          * Toggle collapse state for all group monitors
@@ -572,7 +687,13 @@ export default {
                         .filter((monitorTagId) => this.filterState.tags.includes(monitorTagId)).length > 0; // perform Array Intersaction between filter and monitor's tags
             }
 
-            return searchTextMatch && statusMatch && activeMatch && tagsMatch;
+            // filter by group (single level: direct children of the group)
+            let groupMatch = true;
+            if (this.filterState.group != null) {
+                groupMatch = monitor.parent === this.filterState.group;
+            }
+
+            return searchTextMatch && statusMatch && activeMatch && tagsMatch && groupMatch;
         },
         /**
          * Function used in Array.sort to order monitors in a list.
